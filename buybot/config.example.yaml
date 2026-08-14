@@ -1,0 +1,75 @@
+# Copy to config.yaml and fill in your details. Never commit config.yaml.
+product_url: "https://merch.riotgames.com/es-es/product/riftbound-t1-2025-worlds-signature-edition/"
+sku: "RB3864-00-00"
+
+# Optional: only needed if the storefront requires choosing a size before buying.
+size: null
+
+# Persisted Chromium profile; log in once via `buybot login`.
+profile_dir: "profiles/default"
+
+# headless: true is fine once the session is logged in.
+headless: true
+
+# safety_mode: stop right before payment and alert you to finish manually.
+# Set to false only if you provide payment details below (full automation).
+safety_mode: true
+
+# Optional shared secret; changedetection.io must send it in an X-Buybot-Secret header.
+# webhook_secret: "change-me"
+
+checkout_timeout_seconds: 60
+
+shipping:
+  full_name: "Your Name"
+  email: "you@example.com"
+  phone: "+34600000000"
+  address_line1: "Calle Falsa 123"
+  address_line2: ""
+  city: "Madrid"
+  postal_code: "28001"
+  region: "Madrid"
+  country: "España"
+
+# Only used when safety_mode: false
+payment:
+  card_number: null
+  card_holder: null
+  expiry_month: null
+  expiry_year: null
+  cvv: null
+
+# Optional status alerts (Telegram / Discord / generic JSON webhook).
+alerts: []
+#  - type: telegram
+#    url: "https://api.telegram.org/bot<TOKEN>/sendMessage"
+#    chat_id: "<CHAT_ID>"
+#  - type: discord
+#    url: "https://discord.com/api/webhooks/<ID>/<TOKEN>"
+
+# Marker strings used to decide availability from visible page text.
+buy_markers:
+  - "Comprar ahora"
+  - "Comprar ya"
+  - "Añadir a la cesta"
+  - "Add to cart"
+  - "Buy now"
+
+out_of_stock_markers:
+  - "Sin existencias"
+  - "Agotado"
+  - "No disponible"
+  - "Sold out"
+  - "Out of stock"
+  - "Próximamente"
+
+# If any of these appear, the bot aborts before buying (run `buybot login` first).
+login_required_markers:
+  - "Inicia sesión para comprar"
+  - "Login to buy"
+  - "Sign in to buy"
+
+# Override checkout CSS selectors here if the storefront markup changes.
+selectors: {}
+#  buy_now: 'button:has-text("Comprar ya")'
+#  checkout: 'button:has-text("Tramitar pedido")'

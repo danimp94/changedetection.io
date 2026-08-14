@@ -27,6 +27,9 @@ venv/
 datastore/
 test-datastore/
 
+# Buybot persistent browser profiles
+profiles/
+
 # Memory consumption log
 test-memory.log
 

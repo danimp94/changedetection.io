@@ -47,6 +47,23 @@ def contains_marker(text: str, markers: list[str]) -> bool:
     return any(_normalize(marker) in haystack for marker in markers)
 
 
+LISTING_PATH_HINTS = ("/launch/", "/collections/", "/category/", "/catalog/", "/search")
+
+
+def is_listing_page(html: str, url: str = "") -> bool:
+    """Heuristic: announcement/listing page without a purchasable offer (brand-agnostic).
+
+    True when the URL looks like a launch/collection feed AND no availability
+    JSON is embedded. Callers should treat this as UNKNOWN ("needs product URL")
+    and never checkout. Single-product pages (even without size) return False.
+    """
+    if not re.findall(r'"availability"\s*:\s*"[^"]+"', html or ""):
+        path = (url or "").lower()
+        if any(hint in path for hint in LISTING_PATH_HINTS):
+            return True
+    return False
+
+
 def detect_stock_state(
     text: str,
     buy_markers: list[str] | None = None,

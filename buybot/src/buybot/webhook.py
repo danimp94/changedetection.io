@@ -19,12 +19,16 @@ class PurchaseManager:
     otherwise N workers allow N concurrent checkouts (double-buy).
     """
 
+    # Generic block backoff: 403/captcha/UNKNOWN pauses triggers, any brand.
+    BLOCK_COOLDOWN_SECONDS = 300.0
+
     def __init__(self, config: BuyConfig) -> None:
         self.config = config
         self._lock = threading.Lock()
         self._active = False
         self._started_at: float | None = None
         self._ordered_at: float | None = None
+        self._cooldown_until: float | None = None
         self.last_result: object = None
         self.last_error: str | None = None
 
@@ -39,11 +43,21 @@ class PurchaseManager:
         except Exception:
             return 120.0
 
+    def cooldown_remaining(self) -> float:
+        import time as _time
+
+        with self._lock:
+            if self._cooldown_until is None:
+                return 0.0
+            return max(0.0, self._cooldown_until - _time.time())
+
     def try_start(self) -> bool:
         import time as _time
 
         with self._lock:
             if self._ordered_at is not None:
+                return False
+            if self._cooldown_until is not None and _time.time() < self._cooldown_until:
                 return False
             if self._active:
                 # Watchdog: a hung Playwright run must not brick the sniper.
@@ -59,11 +73,20 @@ class PurchaseManager:
             self._started_at = _time2.time()
             return True
 
+    def note_blocked(self) -> None:
+        """Enter generic block cooldown (call on 403/captcha/UNKNOWN)."""
+        import time as _time
+
+        with self._lock:
+            self._cooldown_until = _time.time() + self.BLOCK_COOLDOWN_SECONDS
+            self.last_error = "blocked or blind (403/captcha/unknown); cooling down 300s"
+
     def reset(self) -> None:
         with self._lock:
             self._active = False
             self._started_at = None
             self._ordered_at = None
+            self._cooldown_until = None
             self.last_result = None
             self.last_error = None
 
@@ -89,9 +112,14 @@ class PurchaseManager:
                     # Success latch: refuse further auto-buys until /reset.
                     self._ordered_at = _time.time()
         except Exception as exc:  # noqa: BLE001
+            import time as _time2
+
             with self._lock:
                 self.last_result = None
                 self.last_error = f"{type(exc).__name__}: {exc}"
+                # Generic: blocks/blindness back off instead of hammering into a ban.
+                if type(exc).__name__ in {"UnknownStateError"} or "403" in str(exc) or "captcha" in str(exc).lower():
+                    self._cooldown_until = _time2.time() + self.BLOCK_COOLDOWN_SECONDS
             _logging.getLogger("buybot.webhook").exception("checkout failed")
             # Swallow after recording: BackgroundTasks would only log noisy tracebacks.
         finally:
@@ -176,6 +204,7 @@ def create_app(
         return {
             "active": manager.is_active,
             "ordered": ordered,
+            "cooldown_remaining": round(manager.cooldown_remaining(), 1),
             "last_result": _result_to_json(last_result),
             "last_error": last_error,
         }
@@ -184,6 +213,9 @@ def create_app(
         if not manager.try_start():
             if manager.completed_successfully:
                 raise HTTPException(status_code=409, detail="order already placed; POST /reset to re-arm")
+            if manager.cooldown_remaining() > 0:
+                left = manager.cooldown_remaining()
+                raise HTTPException(status_code=429, detail=f"cooling down ({left:.0f}s left); POST /reset to override")
             raise HTTPException(status_code=409, detail="checkout already in progress")
 
     @app.post("/buy")

@@ -35,11 +35,17 @@ py -3.13 -m venv buybot/.venv
 Copy-Item buybot/config.example.yaml buybot/config.yaml
 # edit buybot/config.yaml (product URL, shipping, alerts, secret)
 
-# 3. One-time login (opens a visible browser — sign in to Riot SSO)
+# 3. One-time login (opens a visible browser — sign in to the store: Riot SSO, Nike, adidas…)
 & buybot/.venv/Scripts/python.exe -m buybot.cli login -c buybot/config.yaml
 
 # 4. Dry-run: check current stock state without buying
 & buybot/.venv/Scripts/python.exe -m buybot.cli check -c buybot/config.yaml
+
+# 4b. Generic helpers (any brand; safe, never buy):
+#  - find product URLs on a launch/listing page (e.g. Nike /launch feed before the SKU exists)
+& buybot/.venv/Scripts/python.exe -m buybot.cli resolve -c buybot/config.yaml --url "https://www.nike.com/es/launch"
+#  - list available sizes (empty = one-size product, e.g. accessories/figurines)
+& buybot/.venv/Scripts/python.exe -m buybot.cli sizes -c buybot/config.yaml
 
 # 5. Start the webhook server
 & buybot/.venv/Scripts/python.exe -m buybot.cli serve -c buybot/config.yaml --port 5001
@@ -67,8 +73,14 @@ The webhook is now reachable at `http://127.0.0.1:5001/buy`.
    `{"url": "<product_url>", "sku": "<sku>"}` and mismatches get `400` instead of a
    wasted browser launch. `/buy` stays lenient for apprise bodies.
 5. The server runs with `workers=1` internally — the single-flight guard is per-process.
-   A second trigger while one is active gets `409 checkout already in progress`.
-   `GET /status` (same secret header) shows `active`, `last_result`, `last_error`.
+   A second trigger while one is active gets `409 checkout already in progress`;
+   after an order it latches until `POST /reset`; after a block (403/captcha/blind)
+   it cools down 5 min with `429` (`POST /reset` overrides).
+   `GET /status` (same secret header) shows `active`, `ordered`, `cooldown_remaining`,
+   `last_result`, `last_error`.
+6. Generic config: `size: null` skips selection (one-size products); `size_aliases`
+   maps equivalents (`{"42": ["8.5"]}`); `watch_urls` holds regional variants for
+   `resolve`; secrets accept `${ENV_VAR}` (then `chmod 600 config.yaml`).
 
 ## Safety
 

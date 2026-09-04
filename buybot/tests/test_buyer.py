@@ -142,3 +142,35 @@ def test_login_required_aborts_before_clicking() -> None:
     with pytest.raises(LoginRequiredError):
         run_checkout(page, make_config(sku="RB3864-00-00"))
     assert not any(call[0] == "click" for call in page.calls)
+
+
+def test_size_alias_fallback() -> None:
+    class AliasPage(FakePage):
+        def select_option(self, selector: str, value=None, *, label=None) -> None:
+            raise RuntimeError("no select here")
+
+        def click(self, selector: str, **kwargs) -> None:
+            self.calls.append(("click", selector))
+            # Size attempts use :text-is; CTA/checkout selectors pass through.
+            if 'text-is("' in selector and 'text-is("8.5")' not in selector:
+                raise RuntimeError("miss")
+
+    page = AliasPage("Add to bag")
+    config = make_config(safety_mode=True, size="42", size_aliases={"42": ["8.5"]})
+    result = run_checkout(page, config)
+    assert result.stage == "awaiting_payment"
+
+
+def test_listing_page_aborts_as_unknown() -> None:
+    from buybot.buyer import UnknownStateError
+
+    page = FakePage("Upcoming drops")
+    config = make_config(product_url="https://www.nike.com/us/launch/upcoming", sku=None)
+    with pytest.raises(UnknownStateError):
+        run_checkout(page, config)
+
+
+def test_no_size_product_skips_selection() -> None:
+    page = FakePage("Add to cart")
+    result = run_checkout(page, make_config(size=None, sku=None))
+    assert result.stage == "awaiting_payment"

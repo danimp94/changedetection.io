@@ -120,6 +120,11 @@ def detect_stock(html: str, body_text: str, config: BuyConfig) -> StockState:
     """
     import re as _re
 
+    from .signals import is_listing_page
+
+    if is_listing_page(html, config.product_url):
+        logger.warning("page looks like a launch/listing feed without a purchasable offer; needs product URL")
+        return StockState.UNKNOWN
     state = stock_state_from_html(html, sku=config.sku)
     if state is not StockState.UNKNOWN:
         return state
@@ -187,40 +192,58 @@ def _fill_select_or_text(page: PageProtocol, selector: str, value: str, timeout:
     return _fill_optional(page, selector, value, timeout)
 
 
+def _size_candidates(config: BuyConfig) -> list[str]:
+    """Configured size plus generic aliases (EU/US sneaker equivalents + user map)."""
+    base = [config.size] if config.size else []
+    for alias in config.size_aliases.get(config.size or "", []):
+        if alias not in base:
+            base.append(alias)
+    return base
+
+
+def _available_sizes_best_effort(page: PageProtocol, config: BuyConfig) -> list[str]:
+    """Scrape visible size options when the live page supports locators."""
+    locator_fn = getattr(page, "locator", None)
+    if not callable(locator_fn):
+        return []
+    try:
+        loc = locator_fn(_selector(config, "size_buttons"))
+        texts = loc.all_inner_texts() if hasattr(loc, "all_inner_texts") else []
+        return [t.strip() for t in texts if t and t.strip()][:30]
+    except Exception:
+        return []
+
+
 def _select_size(page: PageProtocol, config: BuyConfig, timeout: int) -> None:
+    # No-size products (one-size, accessories): skip entirely.
     if not config.size:
         return
-    selector = _selector(config, "size")
-    if selector:
-        try:
-            page.select_option(selector, config.size)
-            return
-        except Exception:
-            pass
-        try:
-            page.select_option(selector, label=config.size)
-            return
-        except Exception:
+    for wanted in _size_candidates(config):
+        selector = _selector(config, "size")
+        if selector:
+            for kwargs in ({"value": wanted}, {"label": wanted}):
+                try:
+                    page.select_option(selector, **kwargs)  # type: ignore[arg-type]
+                    return
+                except Exception:
+                    continue
             logger.debug("select size via <select> failed; trying button grid")
-    # Fallback for button-grid size pickers (adidas): exact text match first
-    # (:text-is), because :has-text("M") would also match "XL"/"LM".
-    size = config.size
-    candidates = []
-    buttons_selector = _selector(config, "size_buttons")
-    if buttons_selector:
-        candidates.append(f'{buttons_selector}:text-is("{size}")')
-        candidates.append(f'{buttons_selector}:has-text("{size}")')
-    candidates.append(f'button:text-is("{size}")')
-    candidates.append(f'button:has-text("{size}")')
-    last_exc: Exception | None = None
-    for candidate in candidates:
-        try:
-            page.click(candidate, timeout=min(timeout, 5_000))
-            return
-        except Exception as exc:
-            last_exc = exc
-            continue
-    raise SizeRequiredError(f"Could not select size {size!r}: {last_exc}") from last_exc
+        # Button-grid pickers (adidas/Nike): exact text match first
+        # (:text-is), because :has-text("M") would also match "XL"/"LM".
+        buttons_selector = _selector(config, "size_buttons")
+        tries = []
+        if buttons_selector:
+            tries.append(f'{buttons_selector}:text-is("{wanted}")')
+        tries.append(f'button:text-is("{wanted}")')
+        for candidate in tries:
+            try:
+                page.click(candidate, timeout=min(timeout, 5_000))
+                return
+            except Exception:
+                continue
+    available = _available_sizes_best_effort(page, config)
+    hint = f" Available: {', '.join(available)}." if available else ""
+    raise SizeRequiredError(f"Could not select size {config.size!r}.{hint}") from None
 
 
 def _set_quantity(page: PageProtocol, config: BuyConfig, timeout: int) -> None:
@@ -266,6 +289,23 @@ def _goto_checkout(page: PageProtocol, config: BuyConfig, timeout: int) -> None:
         except Exception:
             logger.debug("no checkout button found; assuming buy-now already navigated to checkout")
     page.wait_for_timeout(1000)
+
+
+def _verify_cart_best_effort(page: PageProtocol, config: BuyConfig) -> None:
+    """Generic post-CTA sanity (brand-agnostic, one-size safe).
+
+    Raises only when the session clearly died (login wall appeared). A stale
+    out-of-stock text snippet is only a warning: JSON detection is authoritative
+    and body text may not have re-rendered yet after the click.
+    """
+    try:
+        body = page.inner_text("body")
+    except Exception:
+        return
+    if contains_marker(body, config.login_required_markers):
+        raise LoginRequiredError("Login wall appeared after add-to-cart; re-run `buybot login`.")
+    if contains_marker(body, config.out_of_stock_markers) and not contains_marker(body, config.buy_markers):
+        logger.warning("post-CTA page still shows out-of-stock text; cart may be empty")
 
 
 REQUIRED_SHIPPING_FIELDS = {"email", "full_name", "address_line1", "city", "postal_code", "country"}
@@ -344,8 +384,22 @@ def run_checkout(page: PageProtocol, config: BuyConfig) -> CheckoutResult:
     """
     timeout = config.checkout_timeout_seconds * 1000
 
-    response = page.goto(config.product_url, wait_until="domcontentloaded", timeout=timeout)
-    page.wait_for_timeout(1500)
+    # Retry goto+detect twice: transient overlays/rate-limits shouldn't kill a drop.
+    # Generic across brands; FakePage-compatible (no new protocol methods required).
+    response = None
+    last_goto_exc: Exception | None = None
+    for attempt in range(2):
+        try:
+            response = page.goto(config.product_url, wait_until="domcontentloaded", timeout=timeout)
+            page.wait_for_timeout(1500)
+            break
+        except Exception as exc:
+            last_goto_exc = exc
+            logger.debug("goto attempt %d failed: %s", attempt + 1, exc)
+            if attempt == 0:
+                page.wait_for_timeout(1000)
+    else:
+        raise CheckoutError(f"Could not load product page: {last_goto_exc}") from last_goto_exc
 
     # response.text() is initial HTML only; prefer rendered DOM for CSR-hydrated JSON-LD.
     html = ""
@@ -380,6 +434,7 @@ def run_checkout(page: PageProtocol, config: BuyConfig) -> CheckoutResult:
         _click_cta(page, config, timeout)
         logger.info("buy CTA clicked; navigating to checkout")
         _goto_checkout(page, config, timeout)
+        _verify_cart_best_effort(page, config)
         logger.info("filling shipping details")
         _fill_shipping(page, config, timeout)
 

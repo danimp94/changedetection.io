@@ -99,3 +99,17 @@ def test_failed_run_does_not_latch(sample_config: BuyConfig) -> None:
     assert "nope" in (status["last_error"] or "")
     # Failed runs must not latch — next trigger is accepted.
     assert client.post("/buy").status_code == 202
+
+
+def test_block_cooldown_returns_429_until_reset(sample_config: BuyConfig) -> None:
+    from buybot.buyer import UnknownStateError
+
+    def blind(config: BuyConfig) -> str:
+        raise UnknownStateError("blind")
+
+    app = create_app(sample_config, run_purchase=blind)
+    client = TestClient(app)
+    assert client.post("/buy").status_code == 202
+    assert client.post("/buy").status_code == 429
+    assert client.post("/reset").status_code == 200
+    assert client.post("/buy").status_code == 202

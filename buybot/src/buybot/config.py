@@ -50,6 +50,11 @@ class BuyConfig(BaseModel):
     product_url: str
     sku: str | None = None
     size: str | None = None
+    # Equivalent sizes to try in order (EU/US sneaker maps, apparel variants).
+    # Example: {"42": ["8.5", "UK 8"], "M": ["Medium"]}. Generic: empty = exact only.
+    size_aliases: dict[str, list[str]] = Field(default_factory=dict)
+    # Alternate regional URLs for the same product (US/ES/JP). Used by `buybot resolve`.
+    watch_urls: list[str] = Field(default_factory=list)
     quantity: int = Field(default=1, ge=1)
     profile_dir: str = "profiles/default"
     cdp_url: str | None = None
@@ -87,11 +92,43 @@ class BuyConfig(BaseModel):
         return secret.get_secret_value()
 
 
+def _expand_env(value: object) -> object:
+    """Expand ${ENV_VAR} in strings (generic secrets support); leaves other types alone."""
+    import os as _os
+
+    if isinstance(value, str):
+        return _os.path.expandvars(value)
+    if isinstance(value, dict):
+        return {k: _expand_env(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_expand_env(v) for v in value]
+    return value
+
+
 def load_config(path: str | Path) -> BuyConfig:
-    """Load and validate a ``BuyConfig`` from a YAML file."""
+    """Load and validate a ``BuyConfig`` from a YAML file.
+
+    Supports ``${ENV_VAR}`` interpolation so secrets need not live in plaintext
+    (e.g. ``webhook_secret: "${BUYBOT_SECRET}"``). Warns when the file is
+    group/world-readable and holds a secret.
+    """
+    import logging as _logging
+    import os as _os
+
     path = Path(path)
     data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-    return BuyConfig.model_validate(data)
+    data = _expand_env(data)
+    config = BuyConfig.model_validate(data)
+    if config.webhook_secret_value or config.payment.card_number:
+        try:
+            mode = _os.stat(path).st_mode
+            if mode & 0o077:
+                _logging.getLogger("buybot").warning(
+                    "config file %s is readable by group/others; run chmod 600 on it", path
+                )
+        except OSError:
+            pass
+    return config
 
 
 def resolve_profile_dir(config: BuyConfig, config_path: str | Path) -> Path:

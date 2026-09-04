@@ -27,6 +27,13 @@ checkout_timeout_seconds: 60
 # Best-effort quantity (default 1). Applied via common qty inputs when present.
 quantity: 1
 
+# Equivalent sizes to try in order (generic; empty = exact match only).
+# EU/US sneaker example: {"42": ["8.5", "UK 8"], "M": ["Medium"]}
+size_aliases: {}
+
+# Alternate regional URLs for the same product (generic; used by `buybot resolve`).
+watch_urls: []
+
 # Optional: attach to your own running Chrome instead of the persistent profile,
 # e.g. launch Chrome with --remote-debugging-port=9222 and set:
 # cdp_url: "http://127.0.0.1:9222"

@@ -69,3 +69,12 @@ def test_sku_window_bidirectional() -> None:
 def test_adidas_markers() -> None:
     assert detect_stock_state("Add to bag") is StockState.IN_STOCK
     assert detect_stock_state("Coming soon — Notify me") is StockState.OUT_OF_STOCK
+
+
+def test_listing_page_guard() -> None:
+    from buybot.signals import is_listing_page
+
+    html = "<div>Upcoming drops</div><a href='/launch/t/x'>details</a>"
+    assert is_listing_page(html, "https://www.nike.com/us/launch/upcoming") is True
+    assert is_listing_page(html, "https://merch.riotgames.com/product/x/") is False
+    assert is_listing_page('"availability":"inStock"', "https://www.nike.com/us/launch/upcoming") is False

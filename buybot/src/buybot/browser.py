@@ -24,57 +24,93 @@ class BrowserSession:
         profile_dir: str | Path | None = None,
         headless: bool = True,
         cdp_url: str | None = None,
-        channel: str = "chrome",
+        channel: str | None = None,
+        locale: str = "es-ES",
     ) -> None:
         self.profile_dir = Path(profile_dir) if profile_dir else None
         self.headless = headless
         self.cdp_url = cdp_url
         self.channel = channel
+        self.locale = locale
         self._pw = None
         self._context: BrowserContext | None = None
         self._browser = None
         self._owns_browser = False
+        self._owns_context = False
         self._pages: list[Page] = []
 
     def __enter__(self) -> BrowserSession:
         self._pw = sync_playwright().start()
-        if self.cdp_url:
-            self._browser = self._pw.chromium.connect_over_cdp(self.cdp_url)
-            self._context = self._browser.contexts[0] if self._browser.contexts else self._browser.new_context()
-            self._owns_browser = False
-        else:
-            if self.profile_dir is None:
-                raise ValueError("profile_dir is required when cdp_url is not set")
-            self.profile_dir.mkdir(parents=True, exist_ok=True)
-            self._context = self._pw.chromium.launch_persistent_context(
-                user_data_dir=str(self.profile_dir),
-                channel=self.channel,
-                headless=self.headless,
-                viewport={"width": 1280, "height": 900},
-                locale="es-ES",
-                args=["--disable-blink-features=AutomationControlled"],
-                ignore_default_args=["--enable-automation"],
-            )
-            self._owns_browser = True
+        try:
+            if self.cdp_url:
+                self._browser = self._pw.chromium.connect_over_cdp(self.cdp_url)
+                if self._browser.contexts:
+                    # Prefer a context that already has the product open, else first.
+                    self._context = self._browser.contexts[0]
+                else:
+                    self._context = self._browser.new_context(locale=self.locale)
+                    self._owns_context = True
+                self._owns_browser = False
+            else:
+                if self.profile_dir is None:
+                    raise ValueError("profile_dir is required when cdp_url is not set")
+                self.profile_dir.mkdir(parents=True, exist_ok=True)
+                kwargs: dict = dict(
+                    user_data_dir=str(self.profile_dir),
+                    headless=self.headless,
+                    viewport={"width": 1280, "height": 900},
+                    locale=self.locale,
+                    args=["--disable-blink-features=AutomationControlled"],
+                    ignore_default_args=["--enable-automation"],
+                )
+                # channel=None uses Playwright's bundled Chromium (works with
+                # `playwright install chromium`); only set when explicitly wanted.
+                if self.channel:
+                    kwargs["channel"] = self.channel
+                try:
+                    self._context = self._pw.chromium.launch_persistent_context(**kwargs)
+                except Exception as exc:
+                    msg = str(exc)
+                    if "SingletonLock" in msg or "already" in msg.lower():
+                        raise RuntimeError(
+                            f"Browser profile {self.profile_dir} is already in use; "
+                            "close the other browser or wait for the active checkout to finish."
+                        ) from exc
+                    raise
+                self._owns_browser = True
+        except Exception:
+            if self._pw is not None:
+                try:
+                    self._pw.stop()
+                except Exception:
+                    pass
+                self._pw = None
+            raise
         return self
 
     def __exit__(self, *exc: object) -> None:
-        if self._owns_browser:
-            for page in self._pages:
-                try:
-                    page.close()
-                except Exception:
-                    pass
-            if self._context is not None:
+        for page in self._pages:
+            try:
+                page.close()
+            except Exception:
+                pass
+        if self._owns_browser and self._context is not None:
+            try:
                 self._context.close()
-        else:
-            for page in self._pages:
-                try:
-                    page.close()
-                except Exception:
-                    pass
+            except Exception:
+                pass
+        elif self._owns_context and self._context is not None:
+            # We created this CDP context; clean it up. Otherwise leave the
+            # user's own browser contexts alone.
+            try:
+                self._context.close()
+            except Exception:
+                pass
         if self._pw is not None:
-            self._pw.stop()
+            try:
+                self._pw.stop()
+            except Exception:
+                pass
 
     @property
     def context(self) -> BrowserContext:

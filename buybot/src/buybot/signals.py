@@ -18,6 +18,8 @@ DEFAULT_BUY_MARKERS = [
     "Comprar ya",
     "Añadir a la cesta",
     "Add to cart",
+    "Add to bag",
+    "Add to basket",
     "Buy now",
 ]
 
@@ -28,6 +30,9 @@ DEFAULT_OUT_OF_STOCK_MARKERS = [
     "Sold out",
     "Out of stock",
     "Próximamente",
+    "Coming soon",
+    "Notify me",
+    "Unavailable",
 ]
 
 
@@ -49,42 +54,85 @@ def detect_stock_state(
 ) -> StockState:
     """Classify visible page text as in-stock, out-of-stock, or unknown.
 
-    In-stock markers take precedence because a "sold out" label can coexist with
-    a "buy now" button during transient UI states. Matching is case- and
-    accent-insensitive.
+    Returns UNKNOWN when buy and out-of-stock markers coexist (conflicting UI,
+    e.g. a persistent "buy now" element alongside "sold out"), so callers can
+    distinguish "detector blind / markup changed" from a definitive OOS and
+    avoid false-positive checkouts. Matching is case- and accent-insensitive.
     """
     haystack = _normalize(text)
     buy_markers = buy_markers or DEFAULT_BUY_MARKERS
     out_of_stock_markers = out_of_stock_markers or DEFAULT_OUT_OF_STOCK_MARKERS
 
-    for marker in buy_markers:
-        if _normalize(marker) in haystack:
-            return StockState.IN_STOCK
-    for marker in out_of_stock_markers:
-        if _normalize(marker) in haystack:
-            return StockState.OUT_OF_STOCK
+    has_buy = any(_normalize(marker) in haystack for marker in buy_markers)
+    has_oos = any(_normalize(marker) in haystack for marker in out_of_stock_markers)
+    if has_buy and has_oos:
+        return StockState.UNKNOWN
+    if has_buy:
+        return StockState.IN_STOCK
+    if has_oos:
+        return StockState.OUT_OF_STOCK
     return StockState.UNKNOWN
 
 
-def availability_from_html(html: str, sku: str | None = None) -> str | None:
-    """Extract the raw ``availability`` value embedded in the Next.js HTML.
+def _normalize_availability(value: str) -> str:
+    """Normalize raw availability to a compact token.
 
-    The Riot merch storefront renders product data server-side as escaped JSON
-    (``\\"availability\\":\\"outOfStock\\"``). When ``sku`` is provided the search
-    is scoped to that product so related-item recommendations don't cause false
-    positives.
+    Handles plain tokens (``inStock``), schema.org URLs
+    (``https://schema.org/InStock``), and separators (``_``, ``-``, spaces).
     """
-    unescaped = html.replace('\\"', '"')
-    if sku:
-        index = unescaped.find(f'"sku":"{sku}"')
-        if index == -1:
-            return None
-        window = unescaped[index : index + 4000]
-    else:
-        window = unescaped
+    token = value.strip().lower()
+    # Take the last path/fragment segment for URLs/URNs.
+    for sep in ("/", "#", ":"):
+        if sep in token:
+            token = token.rsplit(sep, 1)[-1]
+    return re.sub(r"[\s_\-]+", "", token)
 
-    match = re.search(r'"availability"\s*:\s*"([a-zA-Z]+)"', window)
-    return match.group(1) if match else None
+
+def availability_from_html(html: str, sku: str | None = None) -> str | None:
+    """Extract the raw ``availability`` value embedded in the page HTML.
+
+    Handles both the Riot merch storefront (escaped Next.js JSON like
+    ``\\"availability\\":\\"outOfStock\\"``) and generic JSON-LD offers
+    (``"availability":"https://schema.org/InStock"``). When ``sku`` is
+    provided the search is scoped to a window around that product so
+    related-item recommendations don't cause false positives; the window
+    extends in both directions because JSON key order is not guaranteed.
+    """
+    unescaped = html.replace('\\"', '"').replace("&quot;", '"')
+    if not sku:
+        matches = re.findall(r'"availability"\s*:\s*"([^"]+)"', unescaped)
+        return matches[0] if matches else None
+
+    index = unescaped.find(f'"sku":"{sku}"')
+    if index == -1:
+        sku_match = re.search(rf'"sku"\s*:\s*"{re.escape(sku)}"', unescaped)
+        if not sku_match:
+            return None
+        index = sku_match.start()
+
+    avail_re = re.compile(r'"availability"\s*:\s*"([^"]+)"')
+    sku_re = re.compile(r'"sku"\s*:\s*"')
+    # Forward first (common order: sku ... availability), bounded by the next
+    # product's sku (any whitespace variant) so related items can't leak in.
+    next_match = sku_re.search(unescaped, index + 1)
+    next_sku = next_match.start() if next_match else len(unescaped)
+    forward_end = min(index + 8000, next_sku)
+    forward_match = avail_re.search(unescaped, index, forward_end)
+    if forward_match:
+        return forward_match.group(1)
+    # Fallback for reversed order (availability ... sku): take the nearest
+    # availability strictly after the previous product boundary, and only when
+    # close to our SKU (avoids attributing the previous product's stock).
+    prev_matches = list(sku_re.finditer(unescaped, 0, index))
+    prev_boundary = prev_matches[-1].start() if prev_matches else index - 8000
+    back_start = max(prev_boundary, index - 8000)
+    backward_matches = list(avail_re.finditer(unescaped, back_start, index))
+    if backward_matches:
+        nearest = backward_matches[-1]
+        # Require proximity: availability far from SKU likely belongs to prev product.
+        if index - nearest.end() <= 2000:
+            return nearest.group(1)
+    return None
 
 
 def stock_state_from_html(html: str, sku: str | None = None) -> StockState:
@@ -92,9 +140,18 @@ def stock_state_from_html(html: str, sku: str | None = None) -> StockState:
     value = availability_from_html(html, sku=sku)
     if value is None:
         return StockState.UNKNOWN
-    normalized = value.lower()
-    if normalized == "instock":
+    normalized = _normalize_availability(value)
+    if normalized in {"instock", "limitedavailability", "preorder", "backorder", "available"}:
+        # Limited/PreOrder/BackOrder are buyable states; treat as in-stock
+        # so the bot attempts checkout rather than missing a drop.
         return StockState.IN_STOCK
-    if normalized in {"outofstock", "out_of_stock", "soldout"}:
+    if normalized in {
+        "outofstock",
+        "soldout",
+        "discontinued",
+        "unavailable",
+        "instoreonly",
+    }:
+        # InStoreOnly means not buyable online, so OOS for this bot.
         return StockState.OUT_OF_STOCK
     return StockState.UNKNOWN

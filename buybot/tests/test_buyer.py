@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from buybot.buyer import LoginRequiredError, OutOfStockError, run_checkout
+from buybot.buyer import LoginRequiredError, OutOfStockError, UnknownStateError, run_checkout
 from buybot.config import BuyConfig, Payment, ShippingAddress
 
 
@@ -37,6 +37,12 @@ class FakePage:
 
     def select_option(self, selector: str, value=None, *, label=None) -> None:
         self.calls.append(("select_option", selector, value))
+        # Simulate missing <select> for button-grid fallback paths.
+        if "size" in selector and value == "MISSING":
+            raise RuntimeError("no such option")
+
+    def content(self) -> str:
+        return self.html
 
     def wait_for_timeout(self, milliseconds: int) -> None:
         self.calls.append(("wait", milliseconds))
@@ -104,9 +110,9 @@ def test_full_order_when_auto_pay() -> None:
     assert page.filled.get("input[autocomplete=\"cc-number\"], input[name*=\"cardnumber\" i]") == "4242424242424242"
 
 
-def test_unknown_state_aborts() -> None:
+def test_unknown_state_aborts_distinctly() -> None:
     page = FakePage("Página de producto sin botón de compra")
-    with pytest.raises(OutOfStockError):
+    with pytest.raises(UnknownStateError):
         run_checkout(page, make_config())
 
 

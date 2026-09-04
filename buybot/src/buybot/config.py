@@ -54,6 +54,7 @@ class BuyConfig(BaseModel):
     profile_dir: str = "profiles/default"
     cdp_url: str | None = None
     headless: bool = True
+    locale: str = "es-ES"
     safety_mode: bool = True
     webhook_secret: SecretStr | None = None
     checkout_timeout_seconds: int = Field(default=60, ge=5)

@@ -15,9 +15,9 @@ def test_detect_unknown_when_no_markers() -> None:
     assert detect_stock_state("Texto irrelevante sobre la marca") is StockState.UNKNOWN
 
 
-def test_in_stock_takes_precedence() -> None:
+def test_conflicting_markers_yield_unknown() -> None:
     text = "Sin existencias Comprar ya"
-    assert detect_stock_state(text) is StockState.IN_STOCK
+    assert detect_stock_state(text) is StockState.UNKNOWN
 
 
 def test_availability_from_html_scoped_by_sku() -> None:
@@ -43,3 +43,29 @@ def test_availability_from_html_missing_sku_returns_none() -> None:
 def test_stock_state_from_html() -> None:
     assert stock_state_from_html('\\"availability\\":\\"inStock\\"') is StockState.IN_STOCK
     assert stock_state_from_html('\\"availability\\":\\"outOfStock\\"') is StockState.OUT_OF_STOCK
+
+
+def test_schema_org_urls() -> None:
+    assert (
+        stock_state_from_html('"availability":"https://schema.org/InStock"') is StockState.IN_STOCK
+    )
+    assert (
+        stock_state_from_html('"availability":"https://schema.org/OutOfStock"') is StockState.OUT_OF_STOCK
+    )
+    assert (
+        stock_state_from_html('"availability":"http://schema.org/LimitedAvailability"') is StockState.IN_STOCK
+    )
+    assert (
+        stock_state_from_html('"availability":"https://schema.org/InStoreOnly"') is StockState.OUT_OF_STOCK
+    )
+
+
+def test_sku_window_bidirectional() -> None:
+    # availability BEFORE sku (reversed key order) must still be found.
+    html = '"availability":"inStock","name":"x","sku":"RB3864-00-00"'
+    assert stock_state_from_html(html, sku="RB3864-00-00") is StockState.IN_STOCK
+
+
+def test_adidas_markers() -> None:
+    assert detect_stock_state("Add to bag") is StockState.IN_STOCK
+    assert detect_stock_state("Coming soon — Notify me") is StockState.OUT_OF_STOCK

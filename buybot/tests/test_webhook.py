@@ -44,3 +44,58 @@ def test_single_flight_guard(sample_config: BuyConfig) -> None:
     assert client.post("/buy").status_code == 409
     manager.run(lambda c: "done")
     assert client.post("/buy").status_code == 202
+
+
+def test_status_requires_secret_when_configured(sample_config: BuyConfig) -> None:
+    config = sample_config.model_copy(update={"webhook_secret": "s3cret"})
+    client = TestClient(create_app(config, run_purchase=lambda c: "ok"))
+    assert client.get("/status").status_code == 403
+    assert client.get("/status", headers={"X-Buybot-Secret": "s3cret"}).status_code == 200
+
+
+def test_status_serializes_dataclass_result(sample_config: BuyConfig) -> None:
+    from buybot.buyer import CheckoutResult
+
+    client = TestClient(
+        create_app(sample_config, run_purchase=lambda c: CheckoutResult(stage="ordered", message="Order placed."))
+    )
+    assert client.post("/buy").status_code == 202
+    status = client.get("/status").json()
+    assert status["last_result"] == {"stage": "ordered", "message": "Order placed."}
+    assert status["last_error"] is None
+
+
+def test_buy_json_validates_url_and_sku(sample_config: BuyConfig) -> None:
+    client = TestClient(create_app(sample_config, run_purchase=lambda c: "ok"))
+    assert client.post("/buy-json", json={"url": "https://other.example/x"}).status_code == 400
+    assert client.post("/buy-json", json={"sku": "WRONG-SKU"}).status_code == 400
+    assert client.post("/buy-json", json={"url": sample_config.product_url}).status_code == 202
+    assert client.post("/buy-json", json={}).status_code == 202
+
+
+def test_ordered_latches_until_reset(sample_config: BuyConfig) -> None:
+    from buybot.buyer import CheckoutResult
+
+    app = create_app(
+        sample_config,
+        run_purchase=lambda c: CheckoutResult(stage="ordered", message="Order placed."),
+    )
+    client = TestClient(app)
+    assert client.post("/buy").status_code == 202
+    assert client.post("/buy").status_code == 409
+    assert client.post("/reset").status_code == 200
+    assert client.post("/buy").status_code == 202
+
+
+def test_failed_run_does_not_latch(sample_config: BuyConfig) -> None:
+    def boom(config: BuyConfig) -> str:
+        raise RuntimeError("nope")
+
+    app = create_app(sample_config, run_purchase=boom)
+    client = TestClient(app)
+    assert client.post("/buy").status_code == 202
+    status = client.get("/status").json()
+    assert status["active"] is False
+    assert "nope" in (status["last_error"] or "")
+    # Failed runs must not latch — next trigger is accepted.
+    assert client.post("/buy").status_code == 202

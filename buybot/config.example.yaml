@@ -1,6 +1,6 @@
 # Copy to config.yaml and fill in your details. Never commit config.yaml.
-product_url: "https://merch.riotgames.com/es-es/product/riftbound-t1-2025-worlds-signature-edition/"
-sku: "RB3864-00-00"
+product_url: "https://www.nike.com/es/t/air-jordan-1-low-se-zapatillas-hombre-rhSOKGkR/HV4089-201"
+sku: null
 
 # Optional: only needed if the storefront requires choosing a size before buying.
 size: null
@@ -11,14 +11,29 @@ profile_dir: "profiles/default"
 # headless: true is fine once the session is logged in.
 headless: true
 
+# Browser locale for the checkout (adidas.com needs en-US, Riot ES needs es-ES).
+locale: "es-ES"
+
 # safety_mode: stop right before payment and alert you to finish manually.
 # Set to false only if you provide payment details below (full automation).
 safety_mode: true
 
-# Optional shared secret; changedetection.io must send it in an X-Buybot-Secret header.
+# REQUIRED in production: shared secret; changedetection.io must send it as
+# X-Buybot-Secret header. `buybot serve` warns if unset. /status requires it too.
 # webhook_secret: "change-me"
 
 checkout_timeout_seconds: 60
+
+# Best-effort quantity (default 1). Applied via common qty inputs when present.
+quantity: 1
+
+# Optional: attach to your own running Chrome instead of the persistent profile,
+# e.g. launch Chrome with --remote-debugging-port=9222 and set:
+# cdp_url: "http://127.0.0.1:9222"
+cdp_url: null
+
+# Legacy: no longer blocks the server; kept for backwards compatibility.
+manual_completion_timeout_seconds: 900
 
 shipping:
   full_name: "Your Name"
@@ -48,11 +63,14 @@ alerts: []
 #    url: "https://discord.com/api/webhooks/<ID>/<TOKEN>"
 
 # Marker strings used to decide availability from visible page text.
+# Conflicting buy+OOS markers yield UNKNOWN (not IN_STOCK) to avoid false buys.
 buy_markers:
   - "Comprar ahora"
   - "Comprar ya"
   - "Añadir a la cesta"
   - "Add to cart"
+  - "Add to bag"
+  - "Add to basket"
   - "Buy now"
 
 out_of_stock_markers:
@@ -62,6 +80,9 @@ out_of_stock_markers:
   - "Sold out"
   - "Out of stock"
   - "Próximamente"
+  - "Coming soon"
+  - "Notify me"
+  - "Unavailable"
 
 # If any of these appear, the bot aborts before buying (run `buybot login` first).
 login_required_markers:
@@ -70,6 +91,11 @@ login_required_markers:
   - "Sign in to buy"
 
 # Override checkout CSS selectors here if the storefront markup changes.
+# Generic adidas fallbacks are built in (add-to-bag, size button grid).
 selectors: {}
 #  buy_now: 'button:has-text("Comprar ya")'
 #  checkout: 'button:has-text("Tramitar pedido")'
+#  size_buttons: 'button[data-testid*="size" i]'
+
+# NOTE: run the server with a single worker — the single-flight guard is per-process:
+#   buybot serve -c buybot/config.yaml --port 5001   # serve uses workers=1 internally

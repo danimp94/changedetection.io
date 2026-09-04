@@ -24,7 +24,9 @@ def _cmd_login(args: argparse.Namespace) -> None:
     from .signals import contains_marker
 
     config = _load_resolved_config(args.config)
-    with BrowserSession(config.profile_dir, headless=False) as session:
+    # Visible browser is required for SSO; still honour cdp_url when the user
+    # drives their own Chrome instance.
+    with BrowserSession(config.profile_dir, headless=False, cdp_url=config.cdp_url, locale=config.locale) as session:
         page = session.new_page()
         page.goto(config.product_url, wait_until="domcontentloaded")
         print("Log in to Riot SSO in the opened browser; waiting for the buy button to appear...")
@@ -48,12 +50,22 @@ def _cmd_check(args: argparse.Namespace) -> None:
     from .buyer import detect_stock
 
     config = _load_resolved_config(args.config)
-    with BrowserSession(config.profile_dir, headless=True, cdp_url=config.cdp_url) as session:
+    # Use the configured headless mode so check fingerprints like serve.
+    with BrowserSession(
+        config.profile_dir, headless=config.headless, cdp_url=config.cdp_url, locale=config.locale
+    ) as session:
         page = session.new_page()
         timeout = config.checkout_timeout_seconds * 1000
         response = page.goto(config.product_url, wait_until="domcontentloaded", timeout=timeout)
         page.wait_for_timeout(1500)
-        html = response.text() if response is not None else ""
+        html = ""
+        try:
+            # Re-read after JS hydration; response.text() is initial HTML only.
+            html = page.content() if hasattr(page, "content") else (response.text() if response else "")
+            if response is not None and not html:
+                html = response.text()
+        except Exception:
+            html = response.text() if response is not None else ""
         state = detect_stock(html, page.inner_text("body"), config)
     print(f"Stock state: {state.value}")
 
@@ -64,8 +76,11 @@ def _cmd_serve(args: argparse.Namespace) -> None:
     from .webhook import create_app
 
     config = _load_resolved_config(args.config)
+    if not config.webhook_secret_value:
+        print("WARNING: webhook_secret is not set — /buy is unauthenticated. Set webhook_secret in config.yaml.")
     app = create_app(config)
-    uvicorn.run(app, host=args.host, port=args.port)
+    # Single worker is required: PurchaseManager is a per-process single-flight guard.
+    uvicorn.run(app, host=args.host, port=args.port, workers=1)
 
 
 def main() -> None:
